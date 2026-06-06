@@ -1,11 +1,12 @@
 import math
+
 import numpy as np
-from matplotlib.ticker import MultipleLocator
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
+import cvxpy as cvx
 
-
-T = 100
+T = 30
 L = 2000000
 G = 1.42
 C = 3e8
@@ -47,22 +48,25 @@ def objective_function(xi, yi, lambda_i, I):
     return total_energy
 
 
-def optimize_lambda(xi, yi, I):
-    lambda_i = np.random.rand(I)
-    def obj_lambda(lambda_i):
-        return objective_function(xi, yi, lambda_i, I)
-    result = minimize(obj_lambda, lambda_i, bounds=[(0, 1)] * I, method='SLSQP')
-    if result.success:
-        return result.x
+def optimize_lambda_cvx(xi, yi, I):
+    lambda_i = cvx.Variable(I)
+
+    objective = cvx.Minimize(cvx.sum_squares(xi @ lambda_i - yi))
+
+    constraints = [0 <= lambda_i, lambda_i <= 1]
+    problem = cvx.Problem(objective, constraints)
+    problem.solve()
+
+    if problem.status in ["optimal", "optimal_inaccurate"]:
+        return lambda_i.value
     else:
-        raise Exception("Optimization of lambda_i failed")
+        raise Exception("Optimization failed")
 
 
 def optimize_positions(lambda_i, xi, yi, I):
     def obj_pos(vars):
         xi, yi = vars[:I], vars[I:2 * I]
         return objective_function(xi, yi, lambda_i, I)
-
     initial_pos = np.concatenate([xi, yi])
     constraints = [
         {'type': 'ineq', 'fun': lambda vars: L ** 2 - ((vars[:I] - c) ** 2 + (vars[I:2 * I] - d) ** 2)},
@@ -89,24 +93,48 @@ def print_optimization_details(xi, yi, lambda_i, final_value, I):
     print(f"Final objective function value: {final_value}")
 
 
-tmaxi_values = np.linspace(10, 40, 7)  # tmaxi值从 10 到 50
-objective_values_by_tmaxi = {'Proposed': [], 'Local': [], 'HAPS': [], 'Random': []}
-for tmaxi_value in tmaxi_values:
-    tmaxi = np.full(50, tmaxi_value)
-    xi = np.random.rand(20) * 1000
-    yi = np.random.rand(20) * 1000
-    lambda_i = optimize_lambda(xi, yi, 20)
-    xi_propose, yi_propose = optimize_positions(lambda_i, xi, yi, 20)
-    objective_values_by_tmaxi['Proposed'].append(objective_function(xi_propose, yi_propose, lambda_i, 20))
-    lambda_local = np.zeros(20)
-    xi_local, yi_local = optimize_positions(lambda_local, xi, yi, 20)
-    objective_values_by_tmaxi['Local'].append(objective_function(xi_local, yi_local, lambda_local, 20))
-    lambda_haps = np.ones(20)
-    xi_haps, yi_haps = optimize_positions(lambda_haps, xi, yi, 20)
-    objective_values_by_tmaxi['HAPS'].append(objective_function(xi_haps, yi_haps, lambda_haps, 20))
-    lambda_random = random_lambda_optimization(20)
-    xi_random, yi_random = optimize_positions(lambda_random, xi, yi, 20)
-    objective_values_by_tmaxi['Random'].append(objective_function(xi_random, yi_random, lambda_random, 20))
+car_numbers = np.arange(20, 32, 2)
+objective_values, local_values, haps_values, random_values = [], [], [], []
+xi = np.random.rand(20) * 1000
+yi = np.random.rand(20) * 1000
+OUTER_lOOP = 10
+INNER_LOOP = 10
+
+for I in car_numbers:
+    if I > 20:
+        xi = np.concatenate([xi, np.random.rand(I - len(xi)) * 200])
+        yi = np.concatenate([yi, np.random.rand(I - len(yi)) * 200])
+
+    for outer_loop in range(OUTER_lOOP):
+        for inner_loop in range(INNER_LOOP):
+            lambda_i = optimize_lambda_cvx(xi, yi, I)
+            xi_propose, yi_propose = optimize_positions(lambda_i, xi, yi, I)
+        final_value = objective_function(xi_propose, yi_propose, lambda_i, I)
+    objective_values.append(final_value)
+
+    print_optimization_details(xi_propose, yi_propose, lambda_i, final_value, I)
+
+    for outer_loop in range(OUTER_lOOP):
+        for inner_loop in range(INNER_LOOP):
+            lambda_local = np.zeros(I)
+            xi_local, yi_local = optimize_positions(lambda_local, xi, yi, I)
+        local_value = objective_function(xi_local, yi_local, lambda_local, I)
+    local_values.append(local_value)
+
+    for outer_loop in range(OUTER_lOOP):
+        for inner_loop in range(INNER_LOOP):
+            lambda_haps = np.ones(I)
+            xi_haps, yi_haps = optimize_positions(lambda_haps, xi, yi, I)
+        haps_value = objective_function(xi_haps, yi_haps, lambda_haps, I)
+    haps_values.append(haps_value)
+
+    for outer_loop in range(OUTER_lOOP):
+        for inner_loop in range(INNER_LOOP):
+            lambda_random = random_lambda_optimization(I)
+            xi_random, yi_random = optimize_positions(lambda_random, xi, yi, I)
+        random_value = objective_function(xi_random, yi_random, lambda_random, I)
+    random_values.append(random_value)
+
 
 plt.rcParams.update({
     'font.size': 9,
@@ -121,34 +149,31 @@ plt.rcParams.update({
     'legend.fancybox': False,
 })
 fig, ax = plt.subplots(figsize=(3.8, 3))
-ax.plot(tmaxi_values, objective_values_by_tmaxi['Proposed'], marker='o', linestyle='-', label='Proposed')
-ax.plot(tmaxi_values, objective_values_by_tmaxi['Local'], marker='s', linestyle='--', label='Local')
-ax.plot(tmaxi_values, objective_values_by_tmaxi['HAPS'], marker='^', linestyle='-.', label='HAPS')
-ax.plot(tmaxi_values, objective_values_by_tmaxi['Random'], marker='x', linestyle=':', label='Random')
+ax.plot(car_numbers, objective_values, marker='o', linestyle='-', label='Proposed')
+ax.plot(car_numbers, local_values, marker='s', linestyle='--', label='Local')
+ax.plot(car_numbers, haps_values, marker='^', linestyle='-.', label='HAPS')
+ax.plot(car_numbers, random_values, marker='x', linestyle=':', label='Random')
 for line in ax.lines:
     line.set_clip_on(False)
-plt.xlabel(r'$t_{\mathrm{max,i}}$ ($\mathrm{s}$)')
+ax.set_xlabel('Number of ICVs')
 ax.set_ylabel(r'$E_{\mathrm{total}}$ ($\mathrm{J}$)')
 ax.grid(True, linestyle='--', linewidth=0.5)
 ax.tick_params(axis='x', direction='in')
 ax.tick_params(axis='y', direction='in')
-ax.set_xlim(min(tmaxi_values), max(tmaxi_values))
-ax.set_xticks(tmaxi_values)
-all_y = (objective_values_by_tmaxi['Proposed'] + objective_values_by_tmaxi['Local'] +
-         objective_values_by_tmaxi['HAPS'] + objective_values_by_tmaxi['Random'])
+ax.set_xlim(min(car_numbers), max(car_numbers))
+all_y = objective_values + local_values + haps_values + random_values
 max_y = max(all_y)
-tick_interval = 400
+tick_interval = 500
 ymax = math.ceil(max_y / tick_interval) * tick_interval
 ax.set_ylim(0, ymax)
 ax.yaxis.set_major_locator(MultipleLocator(tick_interval))
 legend = ax.legend(
     loc='upper right',
-    bbox_to_anchor=(1.0, 0.8),
+    bbox_to_anchor=(1.0, 0.78),
     frameon=True
 )
 legend.get_frame().set_facecolor('white')
 legend.get_frame().set_alpha(1.0)
 legend.get_frame().set_linewidth(0.8)
 plt.tight_layout(pad=0.3)
-plt.savefig('./new_perf_figs/ti.png', dpi=300, bbox_inches='tight')
-plt.show()
+plt.savefig('./Vary_NumICVs.png', dpi=300, bbox_inches='tight')
